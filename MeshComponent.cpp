@@ -3,6 +3,8 @@
 #include <vector>
 #include <iostream>
 #include <fstream>
+#include <sstream>
+#include <unordered_map>
 #include <cctype>
 #include <filesystem>
 #include <algorithm>
@@ -11,11 +13,114 @@
 #include <cmath>
 #include <string_view>
 #include <cstring>
+#include <wincodec.h>
+
+#pragma comment(lib, "windowscodecs.lib")
 
 using namespace DirectX;
 namespace megaEngine {
 
     namespace {
+
+        bool CreateLinearWrapSampler(ID3D11Device* device, Microsoft::WRL::ComPtr<ID3D11SamplerState>& out)
+        {
+            D3D11_SAMPLER_DESC sd = {};
+            sd.Filter = D3D11_FILTER_MIN_MAG_MIP_LINEAR;
+            sd.AddressU = D3D11_TEXTURE_ADDRESS_WRAP;
+            sd.AddressV = D3D11_TEXTURE_ADDRESS_WRAP;
+            sd.AddressW = D3D11_TEXTURE_ADDRESS_WRAP;
+            sd.ComparisonFunc = D3D11_COMPARISON_NEVER;
+            sd.MinLOD = 0;
+            sd.MaxLOD = D3D11_FLOAT32_MAX;
+            return SUCCEEDED(device->CreateSamplerState(&sd, out.GetAddressOf()));
+        }
+
+        bool Create1x1WhiteTexture(ID3D11Device* device, Microsoft::WRL::ComPtr<ID3D11ShaderResourceView>& outSrv)
+        {
+            const UINT32 pixel = 0xFFFFFFFFu;
+            D3D11_TEXTURE2D_DESC td = {};
+            td.Width = 1;
+            td.Height = 1;
+            td.MipLevels = 1;
+            td.ArraySize = 1;
+            td.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+            td.SampleDesc.Count = 1;
+            td.Usage = D3D11_USAGE_IMMUTABLE;
+            td.BindFlags = D3D11_BIND_SHADER_RESOURCE;
+            D3D11_SUBRESOURCE_DATA srd = { &pixel, sizeof(UINT32), 0 };
+            Microsoft::WRL::ComPtr<ID3D11Texture2D> tex;
+            if (FAILED(device->CreateTexture2D(&td, &srd, tex.GetAddressOf())))
+                return false;
+            D3D11_SHADER_RESOURCE_VIEW_DESC sv = {};
+            sv.Format = td.Format;
+            sv.ViewDimension = D3D11_SRV_DIMENSION_TEXTURE2D;
+            sv.Texture2D.MipLevels = 1;
+            return SUCCEEDED(device->CreateShaderResourceView(tex.Get(), &sv, outSrv.GetAddressOf()));
+        }
+
+        bool LoadTextureWic(ID3D11Device* device, const wchar_t* path,
+            Microsoft::WRL::ComPtr<ID3D11ShaderResourceView>& outSrv)
+        {
+            Microsoft::WRL::ComPtr<IWICImagingFactory> factory;
+            if (FAILED(CoCreateInstance(CLSID_WICImagingFactory, nullptr, CLSCTX_INPROC_SERVER,
+                IID_PPV_ARGS(&factory))))
+                return false;
+            Microsoft::WRL::ComPtr<IWICBitmapDecoder> decoder;
+            if (FAILED(factory->CreateDecoderFromFilename(path, nullptr, GENERIC_READ,
+                WICDecodeMetadataCacheOnDemand, &decoder)))
+                return false;
+            Microsoft::WRL::ComPtr<IWICBitmapFrameDecode> frame;
+            if (FAILED(decoder->GetFrame(0, &frame)))
+                return false;
+            UINT w = 0, h = 0;
+            if (FAILED(frame->GetSize(&w, &h)) || w == 0 || h == 0)
+                return false;
+            Microsoft::WRL::ComPtr<IWICFormatConverter> conv;
+            if (FAILED(factory->CreateFormatConverter(&conv)))
+                return false;
+            if (FAILED(conv->Initialize(frame.Get(), GUID_WICPixelFormat32bppRGBA,
+                WICBitmapDitherTypeNone, nullptr, 0.0, WICBitmapPaletteTypeMedianCut)))
+                return false;
+
+            const UINT stride = w * 4u;
+            const UINT imageBytes = stride * h;
+            std::vector<BYTE> buf(imageBytes);
+            if (FAILED(conv->CopyPixels(nullptr, stride, imageBytes, buf.data())))
+                return false;
+
+            D3D11_TEXTURE2D_DESC td = {};
+            td.Width = w;
+            td.Height = h;
+            td.MipLevels = 1;
+            td.ArraySize = 1;
+            td.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+            td.SampleDesc.Count = 1;
+            td.Usage = D3D11_USAGE_DEFAULT;
+            td.BindFlags = D3D11_BIND_SHADER_RESOURCE;
+            D3D11_SUBRESOURCE_DATA srd = { buf.data(), stride, 0 };
+            Microsoft::WRL::ComPtr<ID3D11Texture2D> tex;
+            if (FAILED(device->CreateTexture2D(&td, &srd, tex.GetAddressOf())))
+                return false;
+            D3D11_SHADER_RESOURCE_VIEW_DESC sv = {};
+            sv.Format = td.Format;
+            sv.ViewDimension = D3D11_SRV_DIMENSION_TEXTURE2D;
+            sv.Texture2D.MipLevels = 1;
+            return SUCCEEDED(device->CreateShaderResourceView(tex.Get(), &sv, outSrv.GetAddressOf()));
+        }
+
+        struct ObjVertexKey {
+            int vi;
+            int vti;
+            int vni;
+            bool operator==(const ObjVertexKey& o) const { return vi == o.vi && vti == o.vti && vni == o.vni; }
+        };
+        struct ObjVertexKeyHasher {
+            size_t operator()(const ObjVertexKey& k) const
+            {
+                return (static_cast<size_t>(k.vi) << 20) ^ (static_cast<size_t>(k.vti) << 10) ^
+                    static_cast<size_t>(k.vni);
+            }
+        };
 
         bool IsBinaryFbx(const std::string& data)
         {
@@ -302,7 +407,8 @@ namespace megaEngine {
         XMFLOAT4 lightDirAmbient;
     };
 
-    MeshComponent::MeshComponent(Type type, const std::wstring& fbxPath) : type_(type), fbxPath_(fbxPath) {}
+    MeshComponent::MeshComponent(Type type, const std::wstring& meshPath, const std::wstring& diffuseTexturePath)
+        : type_(type), meshPath_(meshPath), diffuseTexturePath_(diffuseTexturePath) {}
     MeshComponent::~MeshComponent() { Shutdown(); }
 
     bool MeshComponent::CompileShader(const wchar_t* filename, const char* entryPoint,
@@ -408,22 +514,22 @@ namespace megaEngine {
 
     bool MeshComponent::LoadFbxAsciiFile()
     {
-        if (fbxPath_.empty()) {
+        if (meshPath_.empty()) {
             std::cout << "MeshComponent FbxFile: empty path.\n";
             return false;
         }
-        const std::filesystem::path filePath(fbxPath_);
+        const std::filesystem::path filePath(meshPath_);
         if (!std::filesystem::exists(filePath)) {
-            std::wcout << L"FBX file not found: " << fbxPath_ << std::endl;
+            std::wcout << L"FBX file not found: " << meshPath_ << std::endl;
             return false;
         }
         if (!std::filesystem::is_regular_file(filePath)) {
-            std::wcout << L"FBX path is not a file: " << fbxPath_ << std::endl;
+            std::wcout << L"FBX path is not a file: " << meshPath_ << std::endl;
             return false;
         }
         std::ifstream ifs(filePath, std::ios::binary);
         if (!ifs) {
-            std::wcout << L"Failed to open FBX file: " << fbxPath_ << std::endl;
+            std::wcout << L"Failed to open FBX file: " << meshPath_ << std::endl;
             return false;
         }
         std::string text((std::istreambuf_iterator<char>(ifs)), std::istreambuf_iterator<char>());
@@ -545,6 +651,186 @@ namespace megaEngine {
         return indexCount_ > 0;
     }
 
+    bool MeshComponent::LoadObjFile()
+    {
+        if (meshPath_.empty()) {
+            std::cout << "MeshComponent ObjFile: empty path.\n";
+            return false;
+        }
+        const std::filesystem::path filePath(meshPath_);
+        if (!std::filesystem::exists(filePath)) {
+            std::wcout << L"OBJ file not found: " << meshPath_ << std::endl;
+            return false;
+        }
+        if (!std::filesystem::is_regular_file(filePath)) {
+            std::wcout << L"OBJ path is not a file: " << meshPath_ << std::endl;
+            return false;
+        }
+        std::ifstream ifs(filePath);
+        if (!ifs) {
+            std::wcout << L"Failed to open OBJ file: " << meshPath_ << std::endl;
+            return false;
+        }
+
+        std::vector<XMFLOAT3> positions;
+        std::vector<XMFLOAT2> texcoords;
+        std::vector<XMFLOAT3> normals;
+        std::vector<Vertex> meshVerts;
+        std::vector<UINT> meshIdx;
+        std::unordered_map<ObjVertexKey, UINT, ObjVertexKeyHasher> unique;
+
+        auto parseFaceToken = [](const std::string& token, int& vi, int& vti, int& vni) {
+            vi = vti = vni = 0;
+            const size_t n = token.size();
+            size_t p0 = 0;
+            const size_t p1 = token.find('/', p0);
+            if (p1 == std::string::npos) {
+                if (!token.empty()) vi = std::stoi(token);
+                return;
+            }
+            if (p1 > p0) vi = std::stoi(token.substr(p0, p1 - p0));
+            if (p1 + 1 >= n) return;
+            const size_t p2 = token.find('/', p1 + 1);
+            if (p2 == std::string::npos) {
+                const std::string mid = token.substr(p1 + 1);
+                if (!mid.empty()) vti = std::stoi(mid);
+                return;
+            }
+            const std::string mid = token.substr(p1 + 1, p2 - p1 - 1);
+            if (!mid.empty()) vti = std::stoi(mid);
+            if (p2 + 1 < n) {
+                const std::string tail = token.substr(p2 + 1);
+                if (!tail.empty()) vni = std::stoi(tail);
+            }
+        };
+
+        auto corner = [&](int vi, int vti, int vni) -> UINT {
+            ObjVertexKey key{ vi, vti, vni };
+            auto it = unique.find(key);
+            if (it != unique.end())
+                return it->second;
+
+            XMFLOAT3 p(0.f, 0.f, 0.f);
+            if (vi > 0 && static_cast<size_t>(vi) <= positions.size())
+                p = positions[static_cast<size_t>(vi - 1)];
+            XMFLOAT2 uv(0.f, 0.f);
+            if (vti > 0 && static_cast<size_t>(vti) <= texcoords.size())
+                uv = texcoords[static_cast<size_t>(vti - 1)];
+            XMFLOAT3 n(0.f, 1.f, 0.f);
+            if (vni > 0 && static_cast<size_t>(vni) <= normals.size())
+                n = normals[static_cast<size_t>(vni - 1)];
+
+            Vertex v{};
+            v.pos = XMFLOAT4(p.x, p.y, p.z, 1.0f);
+            v.color = color_;
+            v.normal = XMFLOAT4(n.x, n.y, n.z, 0.0f);
+            v.uv = uv;
+            const UINT idx = static_cast<UINT>(meshVerts.size());
+            meshVerts.push_back(v);
+            unique.emplace(key, idx);
+            return idx;
+        };
+
+        std::string line;
+        while (std::getline(ifs, line)) {
+            if (line.empty() || line[0] == '#') continue;
+            std::istringstream iss(line);
+            std::string prefix;
+            iss >> prefix;
+            if (prefix == "v") {
+                float x = 0, y = 0, z = 0;
+                iss >> x >> y >> z;
+                positions.emplace_back(x, y, z);
+            }
+            else if (prefix == "vt") {
+                float u = 0, v = 0;
+                iss >> u >> v;
+                texcoords.emplace_back(u, 1.0f - v);
+            }
+            else if (prefix == "vn") {
+                float x = 0, y = 0, z = 0;
+                iss >> x >> y >> z;
+                XMFLOAT3 n(x, y, z);
+                XMVECTOR nv = XMVector3Normalize(XMLoadFloat3(&n));
+                XMStoreFloat3(&n, nv);
+                normals.push_back(n);
+            }
+            else if (prefix == "f") {
+                std::vector<std::string> tok;
+                std::string t;
+                while (iss >> t) tok.push_back(std::move(t));
+                if (tok.size() < 3) continue;
+                int vi0 = 0, vti0 = 0, vni0 = 0, vi1 = 0, vti1 = 0, vni1 = 0, vi2 = 0, vti2 = 0, vni2 = 0;
+                parseFaceToken(tok[0], vi0, vti0, vni0);
+                parseFaceToken(tok[1], vi1, vti1, vni1);
+                parseFaceToken(tok[2], vi2, vti2, vni2);
+                const UINT i0 = corner(vi0, vti0, vni0);
+                const UINT i1 = corner(vi1, vti1, vni1);
+                const UINT i2 = corner(vi2, vti2, vni2);
+                meshIdx.push_back(i0);
+                meshIdx.push_back(i1);
+                meshIdx.push_back(i2);
+                if (tok.size() >= 4) {
+                    int vi3 = 0, vti3 = 0, vni3 = 0;
+                    parseFaceToken(tok[3], vi3, vti3, vni3);
+                    const UINT i3 = corner(vi3, vti3, vni3);
+                    meshIdx.push_back(i0);
+                    meshIdx.push_back(i2);
+                    meshIdx.push_back(i3);
+                }
+            }
+        }
+
+        if (meshVerts.empty() || meshIdx.empty()) {
+            std::cout << "OBJ: no geometry loaded.\n";
+            return false;
+        }
+
+        std::vector<XMFLOAT4> pos4;
+        pos4.reserve(positions.size());
+        pickupBoundsRadius_ = 0.0f;
+        for (const auto& p : positions) {
+            pos4.push_back(XMFLOAT4(p.x, p.y, p.z, 1.0f));
+            const float len = sqrtf(p.x * p.x + p.y * p.y + p.z * p.z);
+            if (len > pickupBoundsRadius_) pickupBoundsRadius_ = len;
+        }
+        if (pickupBoundsRadius_ < 1e-4f) pickupBoundsRadius_ = 0.35f;
+
+        importBasis_ = XMMatrixIdentity();
+        {
+            const XMMATRIX rot = XMMatrixRotationRollPitchYaw(selfAngles_.x, selfAngles_.y, selfAngles_.z);
+            const XMMATRIX linear = XMMatrixScaling(scale_, scale_, scale_) * rot * importBasis_;
+            float minTy = FLT_MAX;
+            for (const auto& p : pos4) {
+                XMVECTOR t = XMVector4Transform(XMLoadFloat4(&p), linear);
+                const float y = XMVectorGetY(t);
+                if (y < minTy) minTy = y;
+            }
+            if (minTy < FLT_MAX && std::isfinite(minTy))
+                position_.y -= minTy;
+        }
+
+        CreateGpuMesh(meshVerts, meshIdx);
+        return indexCount_ > 0;
+    }
+
+    bool MeshComponent::EnsureDiffuseResources(ID3D11Device* device, ID3D11DeviceContext*)
+    {
+        if (!CreateLinearWrapSampler(device, diffuseSampler_))
+            return false;
+        if (!diffuseTexturePath_.empty()) {
+            if (!LoadTextureWic(device, diffuseTexturePath_.c_str(), diffuseSrv_)) {
+                std::wcout << L"Failed to load diffuse texture: " << diffuseTexturePath_ << std::endl;
+                return false;
+            }
+        }
+        else {
+            if (!Create1x1WhiteTexture(device, diffuseSrv_))
+                return false;
+        }
+        return true;
+    }
+
     bool MeshComponent::Initialize(ID3D11Device* device, ID3D11DeviceContext* context, HWND hwnd)
     {
         context_ = context;
@@ -559,7 +845,7 @@ namespace megaEngine {
         D3D11_INPUT_ELEMENT_DESC layout[] = {
             { "POSITION", 0, DXGI_FORMAT_R32G32B32A32_FLOAT, 0, 0, D3D11_INPUT_PER_VERTEX_DATA, 0 },
             { "COLOR", 0, DXGI_FORMAT_R32G32B32A32_FLOAT, 0, D3D11_APPEND_ALIGNED_ELEMENT, D3D11_INPUT_PER_VERTEX_DATA, 0 },
-            { "NORMAL", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, D3D11_APPEND_ALIGNED_ELEMENT, D3D11_INPUT_PER_VERTEX_DATA, 0 },
+            { "NORMAL", 0, DXGI_FORMAT_R32G32B32A32_FLOAT, 0, D3D11_APPEND_ALIGNED_ELEMENT, D3D11_INPUT_PER_VERTEX_DATA, 0 },
             { "TEXCOORD", 0, DXGI_FORMAT_R32G32_FLOAT, 0, D3D11_APPEND_ALIGNED_ELEMENT, D3D11_INPUT_PER_VERTEX_DATA, 0 }
         };
         if (FAILED(device->CreateInputLayout(layout, 4, vsBlob->GetBufferPointer(), vsBlob->GetBufferSize(), &inputLayout_))) { vsBlob->Release(); psBlob->Release(); return false; }
@@ -567,11 +853,26 @@ namespace megaEngine {
 
         if (type_ == Type::Box) CreateBox(1.0f);
         else if (type_ == Type::Sphere) CreateSphere(0.5f, 16, 16);
-        else {
+        else if (type_ == Type::FbxFile) {
             if (!LoadFbxAsciiFile()) {
                 Shutdown();
                 return false;
             }
+        }
+        else if (type_ == Type::ObjFile) {
+            if (!LoadObjFile()) {
+                Shutdown();
+                return false;
+            }
+        }
+        else {
+            Shutdown();
+            return false;
+        }
+
+        if (!EnsureDiffuseResources(device, context)) {
+            Shutdown();
+            return false;
         }
 
         CD3D11_RASTERIZER_DESC rsDesc(D3D11_DEFAULT);
@@ -642,7 +943,7 @@ namespace megaEngine {
 
     bool MeshComponent::IsKatamariPickable() const
     {
-        return (type_ == Type::FbxFile || type_ == Type::Box) && stickParent_ == nullptr;
+        return (type_ == Type::FbxFile || type_ == Type::ObjFile || type_ == Type::Box) && stickParent_ == nullptr;
     }
 
     void MeshComponent::AttachToKatamariBall(MeshComponent* ball)
@@ -720,12 +1021,22 @@ namespace megaEngine {
         context->VSSetConstantBuffers(0, 1, constantBuffer_.GetAddressOf());
         context->PSSetConstantBuffers(0, 1, constantBuffer_.GetAddressOf());
 
+        if (diffuseSrv_)
+            context->PSSetShaderResources(0, 1, diffuseSrv_.GetAddressOf());
+        if (diffuseSampler_)
+            context->PSSetSamplers(0, 1, diffuseSampler_.GetAddressOf());
+
         context->DrawIndexed(indexCount_, 0, 0);
+
+        ID3D11ShaderResourceView* nullSrv = nullptr;
+        context->PSSetShaderResources(0, 1, &nullSrv);
     }
 
     void MeshComponent::Shutdown()
     {
         vertexBuffer_.Reset(); indexBuffer_.Reset(); vertexShader_.Reset(); pixelShader_.Reset(); inputLayout_.Reset(); rasterizerState_.Reset(); constantBuffer_.Reset();
+        diffuseSrv_.Reset();
+        diffuseSampler_.Reset();
     }
 
 }

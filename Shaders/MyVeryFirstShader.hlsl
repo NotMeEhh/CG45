@@ -7,6 +7,9 @@ cbuffer CBPerObject : register(b0)
     float4 LightDirAmbient;
 };
 
+Texture2D diffuseTex : register(t0);
+SamplerState sampLinear : register(s0);
+
 struct VS_IN
 {
     float4 pos : POSITION;
@@ -41,5 +44,6 @@ PS_IN VSMain(VS_IN input)
 
 float4 PSMain(PS_IN input) : SV_Target
 {
-    return input.color;
+    float4 tex = diffuseTex.Sample(sampLinear, input.tex);
+    return tex * input.color;
 }

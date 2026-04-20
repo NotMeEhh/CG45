@@ -11,6 +11,7 @@
 #include "Camera.h"
 #include "MeshComponent.h"
 #include "GridRenderer.h"
+#include "GameAudio.h"
 
 using megaEngine::GameComponent;
 using megaEngine::DisplayWin32;
@@ -60,7 +61,11 @@ namespace game {
 
         megaEngine::MeshComponent* player_ = nullptr;
         DirectX::XMFLOAT3 cameraOffset_ = { 0.0f, 2.65f, -6.2f };
-        float playerSpeed_ = 5.0f;
+        float orbitCameraYaw_ = 0.0f;
+        float orbitCameraPitch_ = 0.0f;
+        float orbitCameraDistance_ = 1.0f;
+        float playerSpeed_ = 2.5f;
         unsigned katamariPickups_ = 0;
+        BackgroundMusic backgroundMusic_;
     };
 }

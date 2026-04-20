@@ -1,9 +1,101 @@
 #include "GridRenderer.h"
 #include <d3dcompiler.h>
 #include <iostream>
+#include <vector>
+#include <wincodec.h>
+
+#pragma comment(lib, "windowscodecs.lib")
 
 using namespace DirectX;
 namespace megaEngine {
+
+    namespace {
+        bool CreateLinearWrapSampler(ID3D11Device* device, Microsoft::WRL::ComPtr<ID3D11SamplerState>& out)
+        {
+            D3D11_SAMPLER_DESC sd = {};
+            sd.Filter = D3D11_FILTER_MIN_MAG_MIP_LINEAR;
+            sd.AddressU = D3D11_TEXTURE_ADDRESS_WRAP;
+            sd.AddressV = D3D11_TEXTURE_ADDRESS_WRAP;
+            sd.AddressW = D3D11_TEXTURE_ADDRESS_WRAP;
+            sd.ComparisonFunc = D3D11_COMPARISON_NEVER;
+            sd.MinLOD = 0;
+            sd.MaxLOD = D3D11_FLOAT32_MAX;
+            return SUCCEEDED(device->CreateSamplerState(&sd, out.GetAddressOf()));
+        }
+
+        bool Create1x1WhiteTexture(ID3D11Device* device, Microsoft::WRL::ComPtr<ID3D11ShaderResourceView>& outSrv)
+        {
+            const UINT32 pixel = 0xFFFFFFFFu;
+            D3D11_TEXTURE2D_DESC td = {};
+            td.Width = 1;
+            td.Height = 1;
+            td.MipLevels = 1;
+            td.ArraySize = 1;
+            td.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+            td.SampleDesc.Count = 1;
+            td.Usage = D3D11_USAGE_IMMUTABLE;
+            td.BindFlags = D3D11_BIND_SHADER_RESOURCE;
+            D3D11_SUBRESOURCE_DATA srd = { &pixel, sizeof(UINT32), 0 };
+            Microsoft::WRL::ComPtr<ID3D11Texture2D> tex;
+            if (FAILED(device->CreateTexture2D(&td, &srd, tex.GetAddressOf())))
+                return false;
+            D3D11_SHADER_RESOURCE_VIEW_DESC sv = {};
+            sv.Format = td.Format;
+            sv.ViewDimension = D3D11_SRV_DIMENSION_TEXTURE2D;
+            sv.Texture2D.MipLevels = 1;
+            return SUCCEEDED(device->CreateShaderResourceView(tex.Get(), &sv, outSrv.GetAddressOf()));
+        }
+
+        bool LoadTextureWic(ID3D11Device* device, const wchar_t* path,
+            Microsoft::WRL::ComPtr<ID3D11ShaderResourceView>& outSrv)
+        {
+            Microsoft::WRL::ComPtr<IWICImagingFactory> factory;
+            if (FAILED(CoCreateInstance(CLSID_WICImagingFactory, nullptr, CLSCTX_INPROC_SERVER,
+                IID_PPV_ARGS(&factory))))
+                return false;
+            Microsoft::WRL::ComPtr<IWICBitmapDecoder> decoder;
+            if (FAILED(factory->CreateDecoderFromFilename(path, nullptr, GENERIC_READ,
+                WICDecodeMetadataCacheOnDemand, &decoder)))
+                return false;
+            Microsoft::WRL::ComPtr<IWICBitmapFrameDecode> frame;
+            if (FAILED(decoder->GetFrame(0, &frame)))
+                return false;
+            UINT w = 0, h = 0;
+            if (FAILED(frame->GetSize(&w, &h)) || w == 0 || h == 0)
+                return false;
+            Microsoft::WRL::ComPtr<IWICFormatConverter> conv;
+            if (FAILED(factory->CreateFormatConverter(&conv)))
+                return false;
+            if (FAILED(conv->Initialize(frame.Get(), GUID_WICPixelFormat32bppRGBA,
+                WICBitmapDitherTypeNone, nullptr, 0.0, WICBitmapPaletteTypeMedianCut)))
+                return false;
+
+            const UINT stride = w * 4u;
+            const UINT imageBytes = stride * h;
+            std::vector<BYTE> buf(imageBytes);
+            if (FAILED(conv->CopyPixels(nullptr, stride, imageBytes, buf.data())))
+                return false;
+
+            D3D11_TEXTURE2D_DESC td = {};
+            td.Width = w;
+            td.Height = h;
+            td.MipLevels = 1;
+            td.ArraySize = 1;
+            td.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+            td.SampleDesc.Count = 1;
+            td.Usage = D3D11_USAGE_DEFAULT;
+            td.BindFlags = D3D11_BIND_SHADER_RESOURCE;
+            D3D11_SUBRESOURCE_DATA srd = { buf.data(), stride, 0 };
+            Microsoft::WRL::ComPtr<ID3D11Texture2D> tex;
+            if (FAILED(device->CreateTexture2D(&td, &srd, tex.GetAddressOf())))
+                return false;
+            D3D11_SHADER_RESOURCE_VIEW_DESC sv = {};
+            sv.Format = td.Format;
+            sv.ViewDimension = D3D11_SRV_DIMENSION_TEXTURE2D;
+            sv.Texture2D.MipLevels = 1;
+            return SUCCEEDED(device->CreateShaderResourceView(tex.Get(), &sv, outSrv.GetAddressOf()));
+        }
+    }
 
     struct CBPerObject {
         XMMATRIX world;
@@ -38,27 +130,27 @@ namespace megaEngine {
         D3D11_INPUT_ELEMENT_DESC layoutDesc[] = {
             { "POSITION", 0, DXGI_FORMAT_R32G32B32A32_FLOAT, 0, 0, D3D11_INPUT_PER_VERTEX_DATA, 0 },
             { "COLOR", 0, DXGI_FORMAT_R32G32B32A32_FLOAT, 0, D3D11_APPEND_ALIGNED_ELEMENT, D3D11_INPUT_PER_VERTEX_DATA, 0 },
-            { "NORMAL", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, D3D11_APPEND_ALIGNED_ELEMENT, D3D11_INPUT_PER_VERTEX_DATA, 0 },
+            { "NORMAL", 0, DXGI_FORMAT_R32G32B32A32_FLOAT, 0, D3D11_APPEND_ALIGNED_ELEMENT, D3D11_INPUT_PER_VERTEX_DATA, 0 },
             { "TEXCOORD", 0, DXGI_FORMAT_R32G32_FLOAT, 0, D3D11_APPEND_ALIGNED_ELEMENT, D3D11_INPUT_PER_VERTEX_DATA, 0 }
         };
         if (FAILED(device->CreateInputLayout(layoutDesc, 4, vsBlob->GetBufferPointer(), vsBlob->GetBufferSize(), &layout_))) { vsBlob->Release(); psBlob->Release(); return false; }
         vsBlob->Release(); psBlob->Release();
 
 
-        // create a simple filled plane (quad) centered at origin using two triangles
+        // Plane with tiled UVs for ground texture (wrap sampler)
         std::vector<VertexPosColorN> verts;
         float half = size * 0.5f;
-        XMFLOAT4 color = XMFLOAT4(0.6f, 0.6f, 0.6f, 1.0f);
-        XMFLOAT4 nUp = XMFLOAT4(0.0f, 1.0f, 0.0f, 0.0f);
-        const XMFLOAT2 zuv(0.f, 0.f);
+        const XMFLOAT4 color = XMFLOAT4(1.0f, 1.0f, 1.0f, 1.0f);
+        const XMFLOAT4 nUp = XMFLOAT4(0.0f, 1.0f, 0.0f, 0.0f);
+        const float uvTiles = 6.0f * (size / 20.0f);
 
-        verts.push_back({ XMFLOAT4(-half, 0.0f, -half, 1.0f), color, nUp, zuv });
-        verts.push_back({ XMFLOAT4(half, 0.0f, half, 1.0f), color, nUp, zuv });
-        verts.push_back({ XMFLOAT4(half, 0.0f, -half, 1.0f), color, nUp, zuv });
+        verts.push_back({ XMFLOAT4(-half, 0.0f, -half, 1.0f), color, nUp, XMFLOAT2(0.0f, 0.0f) });
+        verts.push_back({ XMFLOAT4(half, 0.0f, half, 1.0f), color, nUp, XMFLOAT2(uvTiles, uvTiles) });
+        verts.push_back({ XMFLOAT4(half, 0.0f, -half, 1.0f), color, nUp, XMFLOAT2(uvTiles, 0.0f) });
 
-        verts.push_back({ XMFLOAT4(-half, 0.0f, -half, 1.0f), color, nUp, zuv });
-        verts.push_back({ XMFLOAT4(-half, 0.0f, half, 1.0f), color, nUp, zuv });
-        verts.push_back({ XMFLOAT4(half, 0.0f, half, 1.0f), color, nUp, zuv });
+        verts.push_back({ XMFLOAT4(-half, 0.0f, -half, 1.0f), color, nUp, XMFLOAT2(0.0f, 0.0f) });
+        verts.push_back({ XMFLOAT4(-half, 0.0f, half, 1.0f), color, nUp, XMFLOAT2(0.0f, uvTiles) });
+        verts.push_back({ XMFLOAT4(half, 0.0f, half, 1.0f), color, nUp, XMFLOAT2(uvTiles, uvTiles) });
 
         vertexCount_ = static_cast<UINT>(verts.size());
         UINT totalBytes = static_cast<UINT>(sizeof(VertexPosColorN) * verts.size());
@@ -75,6 +167,14 @@ namespace megaEngine {
         cbDesc.ByteWidth = sizeof(CBPerObject);
         cbDesc.Usage = D3D11_USAGE_DEFAULT;
         if (FAILED(device->CreateBuffer(&cbDesc, nullptr, &constantBuffer_))) return false;
+
+        if (!CreateLinearWrapSampler(device, floorSampler_)) return false;
+
+        static const wchar_t kGroundStoneTex[] = LR"(./models/Ahmatova_Wall_Color.jpeg)";
+        if (!LoadTextureWic(device, kGroundStoneTex, floorDiffuseSrv_)) {
+            std::wcerr << L"Floor texture not found, using white fallback: " << kGroundStoneTex << std::endl;
+            if (!Create1x1WhiteTexture(device, floorDiffuseSrv_)) return false;
+        }
 
         return true;
     }
@@ -95,7 +195,7 @@ namespace megaEngine {
         cb.world = XMMatrixTranspose(XMMatrixIdentity());
         cb.view = XMMatrixTranspose(view);
         cb.proj = XMMatrixTranspose(proj);
-        cb.color = XMFLOAT4(0.6f, 0.6f, 0.6f, 1.0f);
+        cb.color = XMFLOAT4(1.0f, 1.0f, 1.0f, 1.0f);
         {
             XMVECTOR L = XMVector3Normalize(XMVectorSet(0.45f, 1.0f, 0.35f, 0.0f));
             XMFLOAT3 ld;
@@ -107,12 +207,22 @@ namespace megaEngine {
         context->VSSetConstantBuffers(0, 1, constantBuffer_.GetAddressOf());
         context->PSSetConstantBuffers(0, 1, constantBuffer_.GetAddressOf());
 
+        if (floorDiffuseSrv_)
+            context->PSSetShaderResources(0, 1, floorDiffuseSrv_.GetAddressOf());
+        if (floorSampler_)
+            context->PSSetSamplers(0, 1, floorSampler_.GetAddressOf());
+
         context->Draw(vertexCount_, 0);
+
+        ID3D11ShaderResourceView* nullSrv = nullptr;
+        context->PSSetShaderResources(0, 1, &nullSrv);
     }
 
     void GridRenderer::Shutdown()
     {
         vertexBuffer_.Reset(); vs_.Reset(); ps_.Reset(); layout_.Reset(); constantBuffer_.Reset();
+        floorDiffuseSrv_.Reset();
+        floorSampler_.Reset();
     }
 
 }

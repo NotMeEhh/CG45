@@ -130,6 +130,9 @@
     <ClCompile Include="Camera.cpp" />
     <ClCompile Include="DisplayWin32.cpp" />
     <ClCompile Include="Game.cpp" />
+    <ClCompile Include="GameAudio.cpp" />
+    <ClCompile Include="GameCamera.cpp" />
+    <ClCompile Include="GameScene.cpp" />
     <ClCompile Include="GameComponent.cpp" />
     <ClCompile Include="GridRenderer.cpp" />
     <ClCompile Include="InputDevice.cpp" />
@@ -140,6 +143,11 @@
     <ClInclude Include="Camera.h" />
     <ClInclude Include="DisplayWin32.h" />
     <ClInclude Include="Game.h" />
+    <ClInclude Include="GameAudio.h" />
+    <ClInclude Include="GameCamera.h" />
+    <ClInclude Include="GameConstants.h" />
+    <ClInclude Include="GamePaths.h" />
+    <ClInclude Include="GameScene.h" />
     <ClInclude Include="GameComponent.h" />
     <ClInclude Include="GridRenderer.h" />
     <ClInclude Include="InputDevice.h" />

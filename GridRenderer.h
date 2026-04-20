@@ -1,7 +1,6 @@
 #pragma once
 
 #include "GameComponent.h"
-#include "MeshComponent.h"
 #include <d3d11.h>
 #include <wrl.h>
 #include <vector>
@@ -25,6 +24,8 @@ namespace megaEngine {
         Microsoft::WRL::ComPtr<ID3D11InputLayout> layout_;
         Microsoft::WRL::ComPtr<ID3D11Buffer> constantBuffer_;
         Microsoft::WRL::ComPtr<ID3D11DepthStencilState> dssOff_;
+        Microsoft::WRL::ComPtr<ID3D11ShaderResourceView> floorDiffuseSrv_;
+        Microsoft::WRL::ComPtr<ID3D11SamplerState> floorSampler_;
 
         UINT vertexCount_ = 0;
     };

@@ -12,9 +12,10 @@ namespace megaEngine {
 
     class MeshComponent : public GameComponent {
     public:
-        enum class Type { Box, Sphere, FbxFile };
+        enum class Type { Box, Sphere, FbxFile, ObjFile };
 
-        MeshComponent(Type type, const std::wstring& fbxPath = L"");
+        MeshComponent(Type type, const std::wstring& meshPath = L"",
+            const std::wstring& diffuseTexturePath = L"");
         ~MeshComponent();
 
         bool Initialize(ID3D11Device* device, ID3D11DeviceContext* context, HWND hwnd) override;
@@ -48,10 +49,13 @@ namespace megaEngine {
         void CreateBox(float size);
         void CreateSphere(float radius, int slices, int stacks);
         bool LoadFbxAsciiFile();
+        bool LoadObjFile();
+        bool EnsureDiffuseResources(ID3D11Device* device, ID3D11DeviceContext* context);
         void CreateGpuMesh(const std::vector<Vertex>& verts, const std::vector<UINT>& indices);
 
         Type type_;
-        std::wstring fbxPath_;
+        std::wstring meshPath_;
+        std::wstring diffuseTexturePath_;
         DirectX::XMMATRIX importBasis_ = DirectX::XMMatrixIdentity();
         Microsoft::WRL::ComPtr<ID3D11Buffer> vertexBuffer_;
         Microsoft::WRL::ComPtr<ID3D11Buffer> indexBuffer_;
@@ -60,6 +64,8 @@ namespace megaEngine {
         Microsoft::WRL::ComPtr<ID3D11InputLayout> inputLayout_;
         Microsoft::WRL::ComPtr<ID3D11RasterizerState> rasterizerState_;
         Microsoft::WRL::ComPtr<ID3D11Buffer> constantBuffer_;
+        Microsoft::WRL::ComPtr<ID3D11ShaderResourceView> diffuseSrv_;
+        Microsoft::WRL::ComPtr<ID3D11SamplerState> diffuseSampler_;
 
         ID3D11DeviceContext* context_ = nullptr;
         UINT stride_ = sizeof(Vertex);

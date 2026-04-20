@@ -1,4 +1,5 @@
 #include "DisplayWin32.h"
+#include <windowsx.h>
 
 namespace megaEngine {
 
@@ -89,6 +90,39 @@ LRESULT DisplayWin32::WndProc(HWND hwnd, UINT message, WPARAM wParam,
   case WM_KEYUP:
     if (input)
       input->ProcessKeyUp(static_cast<unsigned int>(wParam));
+    return 0;
+
+  case WM_RBUTTONDOWN:
+    SetCapture(hwnd);
+    if (input) {
+      const int x = GET_X_LPARAM(lParam);
+      const int y = GET_Y_LPARAM(lParam);
+      input->ProcessMouseMoveClient(x, y, true);
+    }
+    return 0;
+
+  case WM_RBUTTONUP:
+    if (GetCapture() == hwnd)
+      ReleaseCapture();
+    if (input) {
+      const int x = GET_X_LPARAM(lParam);
+      const int y = GET_Y_LPARAM(lParam);
+      input->ProcessMouseMoveClient(x, y, false);
+    }
+    return 0;
+
+  case WM_MOUSEMOVE:
+    if (input) {
+      const int x = GET_X_LPARAM(lParam);
+      const int y = GET_Y_LPARAM(lParam);
+      const bool rmb = (wParam & MK_RBUTTON) != 0;
+      input->ProcessMouseMoveClient(x, y, rmb);
+    }
+    return 0;
+
+  case WM_CAPTURECHANGED:
+    if (input)
+      input->NotifyMouseCaptureLost();
     return 0;
 
   case WM_DESTROY:
