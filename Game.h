@@ -12,6 +12,8 @@
 #include "MeshComponent.h"
 #include "GridRenderer.h"
 #include "GameAudio.h"
+#include "ShadowMap.h"
+#include "SceneLighting.h"
 
 using megaEngine::GameComponent;
 using megaEngine::DisplayWin32;
@@ -50,6 +52,8 @@ namespace game {
 
         std::vector<std::unique_ptr<GameComponent>> components_;
         std::unique_ptr<megaEngine::GridRenderer> gridRenderer_;
+        std::unique_ptr<megaEngine::ShadowMap> shadowMap_;
+        megaEngine::SceneLighting sceneLighting_;
 
         int screenWidth_ = 800;
         int screenHeight_ = 800;

@@ -56,6 +56,31 @@ namespace game {
         gridRenderer_ = std::make_unique<megaEngine::GridRenderer>();
         if (!gridRenderer_->Initialize(device_.Get(), context_.Get(), kGridPlaneSize, 1.0f)) return false;
 
+        const UINT kShadowMapSize = 2048;
+        shadowMap_ = std::make_unique<megaEngine::ShadowMap>();
+        if (!shadowMap_->Initialize(device_.Get(), kShadowMapSize)) return false;
+
+        const DirectX::XMFLOAT3 lightDirToLight = { 0.45f, 1.0f, 0.35f };
+        const DirectX::XMFLOAT3 sceneCenter = { 0.0f, 0.0f, 0.0f };
+        const float sceneHalfExtent = kLevelHalf + 1.0f;
+        shadowMap_->SetDirectionalLight(lightDirToLight, sceneCenter, sceneHalfExtent);
+
+        {
+            DirectX::XMVECTOR L = DirectX::XMVector3Normalize(
+                DirectX::XMVectorSet(lightDirToLight.x, lightDirToLight.y, lightDirToLight.z, 0.0f));
+            DirectX::XMFLOAT3 ldn;
+            DirectX::XMStoreFloat3(&ldn, L);
+            sceneLighting_.lightDirAmbient = DirectX::XMFLOAT4(ldn.x, ldn.y, ldn.z, 0.28f);
+            sceneLighting_.lightViewProj = shadowMap_->GetViewProj();
+            sceneLighting_.shadowParams = DirectX::XMFLOAT4(
+                1.0f, 0.0025f, 1.0f / static_cast<float>(kShadowMapSize), 0.0f);
+            sceneLighting_.shadowSrv = shadowMap_->GetSrv();
+            sceneLighting_.shadowSampler = shadowMap_->GetSampler();
+        }
+
+        for (auto& comp : components_) comp->SetSceneLighting(sceneLighting_);
+        if (gridRenderer_) gridRenderer_->SetSceneLighting(sceneLighting_);
+
         if (camera_.GetMode() != megaEngine::CameraMode::FPS) camera_.ToggleMode();
         InitOrbitFromOffset(cameraOffset_, orbitCameraYaw_, orbitCameraPitch_, orbitCameraDistance_);
         DirectX::XMFLOAT3 ppos = player_->GetWorldPosition();
@@ -255,6 +280,19 @@ namespace game {
     {
         float clearColor[] = { 0.05f, 0.06f, 0.09f, 1.0f };
         context_->ClearState();
+
+        if (shadowMap_) {
+            const DirectX::XMMATRIX lightVP = shadowMap_->GetViewProj();
+            sceneLighting_.lightViewProj = lightVP;
+            for (auto& comp : components_) comp->SetSceneLighting(sceneLighting_);
+            if (gridRenderer_) gridRenderer_->SetSceneLighting(sceneLighting_);
+
+            shadowMap_->BeginRender(context_.Get());
+            for (auto& comp : components_)
+                comp->RenderDepth(context_.Get(), lightVP);
+            shadowMap_->EndRender(context_.Get());
+        }
+
         context_->ClearRenderTargetView(renderTargetView_.Get(), clearColor);
         if (depthStencilView_) context_->ClearDepthStencilView(depthStencilView_.Get(), D3D11_CLEAR_DEPTH | D3D11_CLEAR_STENCIL, 1.0f, 0);
 
@@ -262,6 +300,7 @@ namespace game {
                              static_cast<float>(screenHeight_), 0.0f, 1.0f };
         context_->RSSetViewports(1, &vp);
         context_->OMSetRenderTargets(1, renderTargetView_.GetAddressOf(), depthStencilView_.Get());
+        context_->OMSetDepthStencilState(depthStencilState_.Get(), 0);
 
         auto view = camera_.GetViewMatrix();
         auto proj = camera_.GetProjMatrix();
@@ -315,6 +354,9 @@ namespace game {
     void Game::Shutdown()
     {
         backgroundMusic_.Stop();
+
+        if (shadowMap_) shadowMap_->Shutdown();
+        shadowMap_.reset();
 
         if (gridRenderer_) gridRenderer_->Shutdown();
         gridRenderer_.reset();

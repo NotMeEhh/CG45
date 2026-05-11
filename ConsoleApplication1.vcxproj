@@ -138,6 +138,7 @@
     <ClCompile Include="InputDevice.cpp" />
     <ClCompile Include="main.cpp" />
     <ClCompile Include="MeshComponent.cpp" />
+    <ClCompile Include="ShadowMap.cpp" />
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="Camera.h" />
@@ -152,6 +153,9 @@
     <ClInclude Include="GridRenderer.h" />
     <ClInclude Include="InputDevice.h" />
     <ClInclude Include="MeshComponent.h" />
+    <ClInclude Include="RenderConstants.h" />
+    <ClInclude Include="SceneLighting.h" />
+    <ClInclude Include="ShadowMap.h" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets">

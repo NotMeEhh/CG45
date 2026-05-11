@@ -1,6 +1,7 @@
 #pragma once
 
 #include "GameComponent.h"
+#include "SceneLighting.h"
 #include <d3d11.h>
 #include <wrl.h>
 #include <DirectXMath.h>
@@ -21,6 +22,8 @@ namespace megaEngine {
         bool Initialize(ID3D11Device* device, ID3D11DeviceContext* context, HWND hwnd) override;
         void Update(float deltaTime) override;
         void Render(ID3D11DeviceContext* context, const DirectX::XMMATRIX& view, const DirectX::XMMATRIX& proj) override;
+        void RenderDepth(ID3D11DeviceContext* context, const DirectX::XMMATRIX& lightViewProj) override;
+        void SetSceneLighting(const SceneLighting& lighting) override { sceneLighting_ = lighting; }
         void Shutdown() override;
 
         void SetOrbitParams(MeshComponent* parent, float radius, float orbitSpeed, const DirectX::XMFLOAT4& color);
@@ -60,6 +63,7 @@ namespace megaEngine {
         Microsoft::WRL::ComPtr<ID3D11Buffer> vertexBuffer_;
         Microsoft::WRL::ComPtr<ID3D11Buffer> indexBuffer_;
         Microsoft::WRL::ComPtr<ID3D11VertexShader> vertexShader_;
+        Microsoft::WRL::ComPtr<ID3D11VertexShader> shadowVertexShader_;
         Microsoft::WRL::ComPtr<ID3D11PixelShader> pixelShader_;
         Microsoft::WRL::ComPtr<ID3D11InputLayout> inputLayout_;
         Microsoft::WRL::ComPtr<ID3D11RasterizerState> rasterizerState_;
@@ -87,5 +91,7 @@ namespace megaEngine {
         float pickupBoundsRadius_ = 0.35f;
 
         DirectX::XMFLOAT4 sphereRollQuat_ = { 0.f, 0.f, 0.f, 1.f };
+
+        SceneLighting sceneLighting_;
     };
 }

@@ -3,6 +3,8 @@
 #include <DirectXMath.h>
 
 namespace megaEngine {
+    struct SceneLighting;
+
     class GameComponent
     {
     public:
@@ -13,6 +15,10 @@ namespace megaEngine {
         virtual void Update(float deltaTime) {}
 
         virtual void Render(ID3D11DeviceContext* context, const DirectX::XMMATRIX& view, const DirectX::XMMATRIX& proj) {}
+
+        virtual void RenderDepth(ID3D11DeviceContext* context, const DirectX::XMMATRIX& lightViewProj) {}
+
+        virtual void SetSceneLighting(const SceneLighting& lighting) {}
 
         virtual void Shutdown() {}
     };

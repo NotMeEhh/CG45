@@ -1,4 +1,5 @@
 #include "MeshComponent.h"
+#include "RenderConstants.h"
 #include <d3dcompiler.h>
 #include <vector>
 #include <iostream>
@@ -240,14 +241,6 @@ namespace megaEngine {
             return !tri.empty();
         }
 
-        XMFLOAT4 DefaultLightDirAmbient()
-        {
-            XMVECTOR L = XMVector3Normalize(XMVectorSet(0.45f, 1.0f, 0.35f, 0.0f));
-            XMFLOAT3 ld;
-            XMStoreFloat3(&ld, L);
-            return XMFLOAT4(ld.x, ld.y, ld.z, 0.28f);
-        }
-
         bool ExtractInnerOfBrace(const std::string& text, size_t openBrace, size_t& innerStart, size_t& innerEnd)
         {
             if (openBrace >= text.size() || text[openBrace] != '{') return false;
@@ -398,14 +391,6 @@ namespace megaEngine {
             }
         }
     }
-
-    struct CBPerObject {
-        XMMATRIX world;
-        XMMATRIX view;
-        XMMATRIX proj;
-        XMFLOAT4 color;
-        XMFLOAT4 lightDirAmbient;
-    };
 
     MeshComponent::MeshComponent(Type type, const std::wstring& meshPath, const std::wstring& diffuseTexturePath)
         : type_(type), meshPath_(meshPath), diffuseTexturePath_(diffuseTexturePath) {}
@@ -842,6 +827,16 @@ namespace megaEngine {
         if (!CompileShader(L"./Shaders/MyVeryFirstShader.hlsl", "PSMain", "ps_5_0", &psBlob)) { vsBlob->Release(); return false; }
         if (FAILED(device->CreatePixelShader(psBlob->GetBufferPointer(), psBlob->GetBufferSize(), nullptr, &pixelShader_))) { vsBlob->Release(); psBlob->Release(); return false; }
 
+        ID3DBlob* shadowVsBlob = nullptr;
+        if (!CompileShader(L"./Shaders/MyVeryFirstShader.hlsl", "VSShadow", "vs_5_0", &shadowVsBlob)) {
+            vsBlob->Release(); psBlob->Release(); return false;
+        }
+        if (FAILED(device->CreateVertexShader(shadowVsBlob->GetBufferPointer(), shadowVsBlob->GetBufferSize(),
+            nullptr, &shadowVertexShader_))) {
+            vsBlob->Release(); psBlob->Release(); shadowVsBlob->Release(); return false;
+        }
+        shadowVsBlob->Release();
+
         D3D11_INPUT_ELEMENT_DESC layout[] = {
             { "POSITION", 0, DXGI_FORMAT_R32G32B32A32_FLOAT, 0, 0, D3D11_INPUT_PER_VERTEX_DATA, 0 },
             { "COLOR", 0, DXGI_FORMAT_R32G32B32A32_FLOAT, 0, D3D11_APPEND_ALIGNED_ELEMENT, D3D11_INPUT_PER_VERTEX_DATA, 0 },
@@ -1014,8 +1009,10 @@ namespace megaEngine {
         cb.world = XMMatrixTranspose(world);
         cb.view = XMMatrixTranspose(view);
         cb.proj = XMMatrixTranspose(proj);
+        cb.lightViewProj = XMMatrixTranspose(sceneLighting_.lightViewProj);
         cb.color = color_;
-        cb.lightDirAmbient = DefaultLightDirAmbient();
+        cb.lightDirAmbient = sceneLighting_.lightDirAmbient;
+        cb.shadowParams = sceneLighting_.shadowParams;
 
         context->UpdateSubresource(constantBuffer_.Get(), 0, nullptr, &cb, 0, 0);
         context->VSSetConstantBuffers(0, 1, constantBuffer_.GetAddressOf());
@@ -1026,15 +1023,49 @@ namespace megaEngine {
         if (diffuseSampler_)
             context->PSSetSamplers(0, 1, diffuseSampler_.GetAddressOf());
 
+        if (sceneLighting_.shadowSrv)
+            context->PSSetShaderResources(1, 1, &sceneLighting_.shadowSrv);
+        if (sceneLighting_.shadowSampler)
+            context->PSSetSamplers(1, 1, &sceneLighting_.shadowSampler);
+
         context->DrawIndexed(indexCount_, 0, 0);
 
-        ID3D11ShaderResourceView* nullSrv = nullptr;
-        context->PSSetShaderResources(0, 1, &nullSrv);
+        ID3D11ShaderResourceView* nullSrv[2] = { nullptr, nullptr };
+        context->PSSetShaderResources(0, 2, nullSrv);
+    }
+
+    void MeshComponent::RenderDepth(ID3D11DeviceContext* context, const XMMATRIX& lightViewProj)
+    {
+        if (!shadowVertexShader_ || !vertexBuffer_ || !indexBuffer_ || indexCount_ == 0)
+            return;
+
+        context->IASetInputLayout(inputLayout_.Get());
+        context->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+        context->IASetIndexBuffer(indexBuffer_.Get(), DXGI_FORMAT_R32_UINT, 0);
+        context->IASetVertexBuffers(0, 1, vertexBuffer_.GetAddressOf(), &stride_, &offset_);
+        context->VSSetShader(shadowVertexShader_.Get(), nullptr, 0);
+        context->PSSetShader(nullptr, nullptr, 0);
+
+        XMMATRIX world = GetWorldMatrix();
+        CBPerObject cb = {};
+        cb.world = XMMatrixTranspose(world);
+        cb.view = XMMatrixTranspose(XMMatrixIdentity());
+        cb.proj = XMMatrixTranspose(XMMatrixIdentity());
+        cb.lightViewProj = XMMatrixTranspose(lightViewProj);
+        cb.color = color_;
+        cb.lightDirAmbient = sceneLighting_.lightDirAmbient;
+        cb.shadowParams = sceneLighting_.shadowParams;
+
+        context->UpdateSubresource(constantBuffer_.Get(), 0, nullptr, &cb, 0, 0);
+        context->VSSetConstantBuffers(0, 1, constantBuffer_.GetAddressOf());
+
+        context->DrawIndexed(indexCount_, 0, 0);
     }
 
     void MeshComponent::Shutdown()
     {
         vertexBuffer_.Reset(); indexBuffer_.Reset(); vertexShader_.Reset(); pixelShader_.Reset(); inputLayout_.Reset(); rasterizerState_.Reset(); constantBuffer_.Reset();
+        shadowVertexShader_.Reset();
         diffuseSrv_.Reset();
         diffuseSampler_.Reset();
     }

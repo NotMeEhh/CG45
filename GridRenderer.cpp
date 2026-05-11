@@ -1,4 +1,5 @@
 #include "GridRenderer.h"
+#include "RenderConstants.h"
 #include <d3dcompiler.h>
 #include <iostream>
 #include <vector>
@@ -97,14 +98,6 @@ namespace megaEngine {
         }
     }
 
-    struct CBPerObject {
-        XMMATRIX world;
-        XMMATRIX view;
-        XMMATRIX proj;
-        XMFLOAT4 color;
-        XMFLOAT4 lightDirAmbient;
-    };
-
     struct VertexPosColorN { XMFLOAT4 pos; XMFLOAT4 color; XMFLOAT4 normal; XMFLOAT2 uv; };
 
     GridRenderer::GridRenderer() {}
@@ -126,6 +119,18 @@ namespace megaEngine {
             vsBlob->Release(); std::cerr << "Failed to compile PS for GridRenderer" << std::endl; return false;
         }
         if (FAILED(device->CreatePixelShader(psBlob->GetBufferPointer(), psBlob->GetBufferSize(), nullptr, &ps_))) { vsBlob->Release(); psBlob->Release(); return false; }
+
+        ID3DBlob* shadowVsBlob = nullptr;
+        if (FAILED(D3DCompileFromFile(L"./Shaders/MyVeryFirstShader.hlsl", nullptr, nullptr, "VSShadow", "vs_5_0",
+            D3DCOMPILE_DEBUG | D3DCOMPILE_SKIP_OPTIMIZATION, 0, &shadowVsBlob, nullptr))) {
+            vsBlob->Release(); psBlob->Release();
+            std::cerr << "Failed to compile shadow VS for GridRenderer" << std::endl;
+            return false;
+        }
+        if (FAILED(device->CreateVertexShader(shadowVsBlob->GetBufferPointer(), shadowVsBlob->GetBufferSize(), nullptr, &shadowVs_))) {
+            vsBlob->Release(); psBlob->Release(); shadowVsBlob->Release(); return false;
+        }
+        shadowVsBlob->Release();
 
         D3D11_INPUT_ELEMENT_DESC layoutDesc[] = {
             { "POSITION", 0, DXGI_FORMAT_R32G32B32A32_FLOAT, 0, 0, D3D11_INPUT_PER_VERTEX_DATA, 0 },
@@ -195,13 +200,10 @@ namespace megaEngine {
         cb.world = XMMatrixTranspose(XMMatrixIdentity());
         cb.view = XMMatrixTranspose(view);
         cb.proj = XMMatrixTranspose(proj);
+        cb.lightViewProj = XMMatrixTranspose(sceneLighting_.lightViewProj);
         cb.color = XMFLOAT4(1.0f, 1.0f, 1.0f, 1.0f);
-        {
-            XMVECTOR L = XMVector3Normalize(XMVectorSet(0.45f, 1.0f, 0.35f, 0.0f));
-            XMFLOAT3 ld;
-            XMStoreFloat3(&ld, L);
-            cb.lightDirAmbient = XMFLOAT4(ld.x, ld.y, ld.z, 0.28f);
-        }
+        cb.lightDirAmbient = sceneLighting_.lightDirAmbient;
+        cb.shadowParams = sceneLighting_.shadowParams;
 
         context->UpdateSubresource(constantBuffer_.Get(), 0, nullptr, &cb, 0, 0);
         context->VSSetConstantBuffers(0, 1, constantBuffer_.GetAddressOf());
@@ -212,15 +214,27 @@ namespace megaEngine {
         if (floorSampler_)
             context->PSSetSamplers(0, 1, floorSampler_.GetAddressOf());
 
+        if (sceneLighting_.shadowSrv)
+            context->PSSetShaderResources(1, 1, &sceneLighting_.shadowSrv);
+        if (sceneLighting_.shadowSampler)
+            context->PSSetSamplers(1, 1, &sceneLighting_.shadowSampler);
+
         context->Draw(vertexCount_, 0);
 
-        ID3D11ShaderResourceView* nullSrv = nullptr;
-        context->PSSetShaderResources(0, 1, &nullSrv);
+        ID3D11ShaderResourceView* nullSrv[2] = { nullptr, nullptr };
+        context->PSSetShaderResources(0, 2, nullSrv);
+    }
+
+    void GridRenderer::RenderDepth(ID3D11DeviceContext* /*context*/, const XMMATRIX& /*lightViewProj*/)
+    {
+        // The ground plane lies in the y=0 plane; including it in the shadow pass only
+        // adds self-shadowing artifacts. The plane only receives shadows.
     }
 
     void GridRenderer::Shutdown()
     {
         vertexBuffer_.Reset(); vs_.Reset(); ps_.Reset(); layout_.Reset(); constantBuffer_.Reset();
+        shadowVs_.Reset();
         floorDiffuseSrv_.Reset();
         floorSampler_.Reset();
     }
